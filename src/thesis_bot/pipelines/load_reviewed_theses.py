@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pandas as pd
 from neo4j import Driver
-from openai import OpenAI
 
 from thesis_bot.clients.neo4j_client import create_neo4j_driver
 from thesis_bot.clients.openai_client import create_openai_client
@@ -14,7 +13,6 @@ from thesis_bot.config import Settings, load_settings
 from thesis_bot.io.review_csv import read_reviewed_theses_csv
 
 
-DEFAULT_TITLE_MODEL = "gpt-4o-mini"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_REVIEWED_FILENAME = "theses_reviewed.csv"
 
@@ -39,72 +37,11 @@ class LoadReviewedThesesResult:
 
 def load_reviewed_dataframe(csv_path: Path) -> pd.DataFrame:
     """Load and validate the reviewed thesis CSV."""
-    return read_reviewed_theses_csv(csv_path)
-
-
-def generate_4word_title(
-    thesis_statement: str,
-    openai_client: OpenAI | None,
-    *,
-    model: str = DEFAULT_TITLE_MODEL,
-) -> str:
-    """Generate a concise title for a thesis statement."""
-    if not openai_client:
-        return thesis_statement[:50]
-
-    prompt = f"""Generate a concise, tight 4-word title that summarizes the following thesis statement.
-
-Requirements:
-- Exactly 4 words (no more, no less)
-- Capture the core essence of the thesis
-- Be specific and meaningful
-- Use title case
-
-Thesis statement: "{thesis_statement}"
-
-Return only the 4-word title."""
-
-    try:
-        response = openai_client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert at creating concise, impactful titles. "
-                        "Always return exactly 4 words."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-            max_tokens=20,
-        )
-        title = (response.choices[0].message.content or "").strip()
-        return title.strip('"').strip("'").strip() or thesis_statement[:50]
-    except Exception as exc:
-        print(f"  Failed to generate title: {exc}")
-        return thesis_statement[:50]
-
-
-def generate_titles_for_dataframe(
-    dataframe: pd.DataFrame,
-    openai_client: OpenAI | None,
-    *,
-    model: str = DEFAULT_TITLE_MODEL,
-) -> dict[int, str]:
-    """Generate short titles for each thesis row."""
-    print("Generating 4-word thesis titles...")
-    thesis_titles: dict[int, str] = {}
-    for _, row in dataframe.iterrows():
-        thesis_num = int(row["Thesis Number"])
-        thesis_statement = row["Thesis Statement"]
-        print(f"  Generating title for thesis {thesis_num}...")
-        title = generate_4word_title(thesis_statement, openai_client, model=model)
-        thesis_titles[thesis_num] = title
-        print(f"    {title}")
-    print(f"\nGenerated {len(thesis_titles)} titles")
-    return thesis_titles
+    settings = load_settings(override=True)
+    return read_reviewed_theses_csv(
+        csv_path,
+        allowed_core_theses=settings.core_theses,
+    )
 
 
 def generate_embedding(
@@ -157,7 +94,6 @@ def clear_neo4j_database(driver: Driver) -> None:
 def create_neo4j_thesis_graph(
     driver: Driver,
     dataframe: pd.DataFrame,
-    thesis_titles: dict[int, str],
     embeddings: dict[int, list[float]],
     *,
     clear_existing: bool = True,
@@ -194,9 +130,9 @@ def create_neo4j_thesis_graph(
             thesis_node_count += 1
             thesis_num = int(row["Thesis Number"])
             thesis = row["Thesis Statement"]
+            title = row["Title"]
             description = row["Description"]
             core_thesis = row["Core Thesis"]
-            title = thesis_titles.get(thesis_num, "")
             embedding = embeddings.get(thesis_num, [])
             is_core = thesis == core_thesis
 
@@ -293,7 +229,6 @@ def run_load_reviewed_theses_pipeline(
     settings: Settings | None = None,
     csv_path: Path | None = None,
     clear_existing: bool = True,
-    title_model: str = DEFAULT_TITLE_MODEL,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
 ) -> LoadReviewedThesesResult:
     """Load the reviewed thesis CSV into Neo4j."""
@@ -310,11 +245,10 @@ def run_load_reviewed_theses_pipeline(
     print(f"Loaded {len(reviewed_dataframe)} reviewed theses")
 
     openai_client = create_openai_client(settings)
-    thesis_titles = generate_titles_for_dataframe(
-        reviewed_dataframe,
-        openai_client,
-        model=title_model,
-    )
+    thesis_titles = {
+        int(row["Thesis Number"]): row["Title"]
+        for _, row in reviewed_dataframe.iterrows()
+    }
     embeddings = generate_embeddings_for_dataframe(
         reviewed_dataframe,
         openai_client,
@@ -327,7 +261,6 @@ def run_load_reviewed_theses_pipeline(
             create_neo4j_thesis_graph(
                 driver,
                 reviewed_dataframe,
-                thesis_titles,
                 embeddings,
                 clear_existing=clear_existing,
             )

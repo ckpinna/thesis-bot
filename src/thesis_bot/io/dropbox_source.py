@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dropbox import Dropbox, common
 from dropbox.exceptions import ApiError, AuthError
-from dropbox.files import FileMetadata, FolderMetadata, ListFolderResult
+from dropbox.files import FileMetadata, FolderMetadata, ListFolderResult, WriteMode
 from typing import Iterator
 
 from thesis_bot.config import Settings
@@ -45,6 +45,28 @@ def load_dropbox_document_artifacts(
 ) -> list[DocumentArtifact]:
     """Load supported documents from a Dropbox folder."""
     return list(iter_dropbox_document_artifacts(settings, dropbox_path=dropbox_path, recursive=recursive))
+
+
+def upload_bytes_to_dropbox(
+    settings: Settings,
+    *,
+    destination_path: str,
+    content: bytes,
+    overwrite: bool = True,
+) -> str:
+    """Upload content bytes to Dropbox and return the uploaded path."""
+    if not settings.dropbox_access_token:
+        raise ValueError("DROPBOX_ACCESS_TOKEN is not configured.")
+
+    dbx = _create_rooted_dropbox_client(settings)
+    mode = WriteMode.overwrite if overwrite else WriteMode.add
+
+    try:
+        result = dbx.files_upload(content, destination_path, mode=mode)
+    except ApiError as exc:
+        raise ValueError(f"Dropbox upload failed for {destination_path}: {exc}") from exc
+
+    return result.path_display or result.path_lower or destination_path
 
 
 def iter_dropbox_document_artifacts(

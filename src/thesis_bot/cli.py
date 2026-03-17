@@ -27,12 +27,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-file",
         type=Path,
         default=None,
-        help="Output CSV path for human review.",
+        help="Optional local output CSV path for human review.",
     )
     extract_parser.add_argument(
         "--model",
         default="gpt-4-turbo-preview",
         help="OpenAI model to use for thesis extraction.",
+    )
+    extract_parser.add_argument(
+        "--title-model",
+        default="gpt-4o-mini",
+        help="OpenAI model to use for 4-word thesis titles.",
     )
 
     load_parser = subparsers.add_parser(
@@ -49,11 +54,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-existing",
         action="store_true",
         help="Do not clear existing Neo4j graph data before loading.",
-    )
-    load_parser.add_argument(
-        "--title-model",
-        default="gpt-4o-mini",
-        help="OpenAI model to use for thesis titles.",
     )
     load_parser.add_argument(
         "--embedding-model",
@@ -87,6 +87,7 @@ def main() -> int:
             input_dir=args.input_dir,
             output_file=args.output_file,
             model=args.model,
+            title_model=args.title_model,
         )
         print(f"\nNext step: review {result.review_csv_path} before Neo4j load.")
         return 0
@@ -95,7 +96,6 @@ def main() -> int:
         result = run_load_reviewed_theses_pipeline(
             csv_path=args.csv_path,
             clear_existing=not args.keep_existing,
-            title_model=args.title_model,
             embedding_model=args.embedding_model,
         )
         print("\nNeo4j load complete.")
