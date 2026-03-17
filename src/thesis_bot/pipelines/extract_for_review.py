@@ -12,6 +12,7 @@ from openai import OpenAI
 from thesis_bot.config import Settings, load_settings
 from thesis_bot.clients.openai_client import create_openai_client
 from thesis_bot.io.pdf import load_pdf_texts
+from thesis_bot.schemas import REVIEWED_CSV_COLUMNS
 
 
 DEFAULT_EXTRACTION_MODEL = "gpt-4-turbo-preview"
@@ -283,12 +284,13 @@ def create_review_dataframe(deduplicated: dict[str, Any]) -> pd.DataFrame:
                 "Thesis Statement": thesis,
                 "Description": thesis_data["description"],
                 "Supports Thesis Numbers": supports_str,
+                "Core Thesis": "",
                 "Source File": thesis_data["source_file"],
             }
         )
 
     rows.sort(key=lambda row: row["Thesis Number"])
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=REVIEWED_CSV_COLUMNS)
 
 
 def write_review_csv(review_dataframe: pd.DataFrame, output_file: Path) -> Path:
@@ -356,4 +358,3 @@ def _parse_json_response(result_text: str) -> dict[str, Any]:
         result_text = json_match.group(0)
 
     return json.loads(result_text.strip())
-
