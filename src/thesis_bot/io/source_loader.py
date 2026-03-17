@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from thesis_bot.config import Settings
+from thesis_bot.io.dropbox_source import load_dropbox_document_artifacts
 from thesis_bot.io.document_source import DocumentArtifact, load_local_document_artifacts
 
 
@@ -23,9 +24,6 @@ def load_source_artifacts(
         return load_local_document_artifacts(settings.latest_thesis_decks_dir)
 
     if settings.artifact_source == "dropbox":
-        raise NotImplementedError(
-            "Dropbox artifact loading is not implemented yet. "
-            f"Configured thesis source path: {settings.dropbox_thesis_source_path or '<unset>'}"
-        )
+        return load_dropbox_document_artifacts(settings, dropbox_path=None, recursive=True)
 
     raise ValueError(f"Unsupported artifact source: {settings.artifact_source}")

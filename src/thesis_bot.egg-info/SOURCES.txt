@@ -1,7 +1,10 @@
 README.md
 pyproject.toml
 src/thesis_bot/__init__.py
+src/thesis_bot/__main__.py
+src/thesis_bot/cli.py
 src/thesis_bot/config.py
+src/thesis_bot/schemas.py
 src/thesis_bot.egg-info/PKG-INFO
 src/thesis_bot.egg-info/SOURCES.txt
 src/thesis_bot.egg-info/dependency_links.txt
@@ -10,3 +13,12 @@ src/thesis_bot.egg-info/top_level.txt
 src/thesis_bot/clients/__init__.py
 src/thesis_bot/clients/neo4j_client.py
 src/thesis_bot/clients/openai_client.py
+src/thesis_bot/io/__init__.py
+src/thesis_bot/io/document_parsers.py
+src/thesis_bot/io/document_source.py
+src/thesis_bot/io/dropbox_source.py
+src/thesis_bot/io/review_csv.py
+src/thesis_bot/io/source_loader.py
+src/thesis_bot/pipelines/__init__.py
+src/thesis_bot/pipelines/extract_for_review.py
+src/thesis_bot/pipelines/load_reviewed_theses.py

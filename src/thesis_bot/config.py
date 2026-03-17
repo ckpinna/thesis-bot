@@ -20,7 +20,7 @@ class Settings:
     artifact_source: str
     dropbox_access_token: str | None
     dropbox_thesis_source_path: str | None
-    dropbox_pitch_decks_path: str | None
+    dropbox_pipeline_decks_path: str | None
     data_dir: Path
     latest_thesis_decks_dir: Path
     analysis_dir: Path
@@ -51,7 +51,7 @@ def load_settings(env_path: Path | None = None, *, override: bool = False) -> Se
         artifact_source=os.getenv("ARTIFACT_SOURCE", "local").strip().lower(),
         dropbox_access_token=os.getenv("DROPBOX_ACCESS_TOKEN"),
         dropbox_thesis_source_path=os.getenv("DROPBOX_THESIS_SOURCE_PATH"),
-        dropbox_pitch_decks_path=os.getenv("DROPBOX_PITCH_DECKS_PATH"),
+        dropbox_pipeline_decks_path=os.getenv("DROPBOX_PIPELINE_DECKS_PATH"),
         data_dir=data_dir,
         latest_thesis_decks_dir=latest_thesis_decks_dir,
         analysis_dir=analysis_dir,
