@@ -13,7 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     extract_parser = subparsers.add_parser(
         "extract-theses",
-        help="Extract theses from PDF decks and write a review CSV.",
+        help="Extract theses from configured source documents and write a review CSV.",
     )
     extract_parser.add_argument(
         "--input-dir",

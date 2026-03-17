@@ -11,7 +11,9 @@ from openai import OpenAI
 
 from thesis_bot.config import Settings, load_settings
 from thesis_bot.clients.openai_client import create_openai_client
-from thesis_bot.io.pdf import load_pdf_texts
+from thesis_bot.io.document_parsers import parse_document_artifacts
+from thesis_bot.io.document_source import ParsedDocument
+from thesis_bot.io.source_loader import load_source_artifacts
 from thesis_bot.schemas import REVIEWED_CSV_COLUMNS
 
 
@@ -23,11 +25,16 @@ CHUNK_OVERLAP_CHARS = 10000
 
 @dataclass(frozen=True)
 class ExtractionRunResult:
-    pdf_texts: dict[str, str]
+    document_texts: dict[str, str]
     all_extractions: dict[str, dict[str, Any]]
     deduplicated: dict[str, Any]
     review_dataframe: pd.DataFrame
     review_csv_path: Path
+
+    @property
+    def pdf_texts(self) -> dict[str, str]:
+        """Backward-compatible alias for older notebook code."""
+        return self.document_texts
 
 
 def extract_theses_from_text(
@@ -162,14 +169,14 @@ def extract_theses_from_text_chunked(
 
 
 def run_extractions(
-    pdf_texts: dict[str, str],
+    document_texts: dict[str, str],
     openai_client: OpenAI | None,
     *,
     model: str = DEFAULT_EXTRACTION_MODEL,
 ) -> dict[str, dict[str, Any]]:
-    """Run thesis extraction for every loaded PDF."""
+    """Run thesis extraction for every loaded document."""
     all_extractions: dict[str, dict[str, Any]] = {}
-    for filename, text in pdf_texts.items():
+    for filename, text in document_texts.items():
         print(f"\n{'=' * 60}")
         print(f"Extracting theses from: {filename}")
         print(f"{'=' * 60}")
@@ -307,18 +314,19 @@ def run_extract_for_review_pipeline(
     output_file: Path | None = None,
     model: str = DEFAULT_EXTRACTION_MODEL,
 ) -> ExtractionRunResult:
-    """Run the extraction workflow from raw PDFs to review CSV."""
+    """Run the extraction workflow from raw documents to review CSV."""
     settings = settings or load_settings(override=True)
     openai_client = create_openai_client(settings)
 
-    resolved_input_dir = input_dir or settings.latest_thesis_decks_dir
     resolved_output_file = output_file or (settings.analysis_dir / DEFAULT_REVIEW_FILENAME)
 
-    print("Loading PDF text...")
-    pdf_texts = load_pdf_texts(resolved_input_dir)
-    print(f"\nLoaded {len(pdf_texts)} PDF file(s)")
+    print("Loading source artifacts...")
+    artifacts = load_source_artifacts(settings, input_dir=input_dir)
+    parsed_documents = parse_document_artifacts(artifacts)
+    document_texts = _parsed_documents_to_text_map(parsed_documents)
+    print(f"\nLoaded {len(document_texts)} document(s)")
 
-    all_extractions = run_extractions(pdf_texts, openai_client, model=model)
+    all_extractions = run_extractions(document_texts, openai_client, model=model)
     print(f"\nExtraction complete for {len(all_extractions)} document(s)")
 
     print("Deduplicating theses...")
@@ -339,7 +347,7 @@ def run_extract_for_review_pipeline(
     )
 
     return ExtractionRunResult(
-        pdf_texts=pdf_texts,
+        document_texts=document_texts,
         all_extractions=all_extractions,
         deduplicated=deduplicated,
         review_dataframe=review_dataframe,
@@ -358,3 +366,7 @@ def _parse_json_response(result_text: str) -> dict[str, Any]:
         result_text = json_match.group(0)
 
     return json.loads(result_text.strip())
+
+
+def _parsed_documents_to_text_map(parsed_documents: list[ParsedDocument]) -> dict[str, str]:
+    return {document.name: document.text for document in parsed_documents}
