@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-
 from thesis_bot.config import load_settings
 from thesis_bot.io.dropbox_source import list_dropbox_entries
 from thesis_bot.pipelines.extract_for_review import run_extract_for_review_pipeline
@@ -15,19 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     extract_parser = subparsers.add_parser(
         "extract-theses",
-        help="Extract theses from configured source documents and write a review CSV.",
-    )
-    extract_parser.add_argument(
-        "--input-dir",
-        type=Path,
-        default=None,
-        help="Directory containing thesis deck PDFs.",
-    )
-    extract_parser.add_argument(
-        "--output-file",
-        type=Path,
-        default=None,
-        help="Optional local output CSV path for human review.",
+        help="Extract theses from the configured Dropbox source and write a Dropbox review CSV.",
     )
     extract_parser.add_argument(
         "--model",
@@ -42,13 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     load_parser = subparsers.add_parser(
         "load-theses",
-        help="Load a reviewed thesis CSV into Neo4j.",
-    )
-    load_parser.add_argument(
-        "--csv-path",
-        type=Path,
-        default=None,
-        help="Path to the reviewed thesis CSV.",
+        help="Load the configured Dropbox reviewed thesis CSV into Neo4j.",
     )
     load_parser.add_argument(
         "--keep-existing",
@@ -59,6 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--embedding-model",
         default="text-embedding-3-small",
         help="OpenAI model to use for thesis description embeddings.",
+    )
+    load_parser.add_argument(
+        "--title-model",
+        default="gpt-4o-mini",
+        help="OpenAI model to use when backfilling missing thesis titles.",
     )
 
     list_dropbox_parser = subparsers.add_parser(
@@ -84,19 +69,17 @@ def main() -> int:
 
     if args.command == "extract-theses":
         result = run_extract_for_review_pipeline(
-            input_dir=args.input_dir,
-            output_file=args.output_file,
             model=args.model,
             title_model=args.title_model,
         )
-        print(f"\nNext step: review {result.review_csv_path} before Neo4j load.")
+        print(f"\nNext step: review {result.dropbox_review_csv_path} before Neo4j load.")
         return 0
 
     if args.command == "load-theses":
         result = run_load_reviewed_theses_pipeline(
-            csv_path=args.csv_path,
             clear_existing=not args.keep_existing,
             embedding_model=args.embedding_model,
+            title_model=args.title_model,
         )
         print("\nNeo4j load complete.")
         print(f"  CoreThesis nodes: {result.core_thesis_count}")

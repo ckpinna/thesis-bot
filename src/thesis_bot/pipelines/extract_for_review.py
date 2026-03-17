@@ -4,7 +4,6 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -32,7 +31,6 @@ class ExtractionRunResult:
     all_extractions: dict[str, dict[str, Any]]
     deduplicated: dict[str, Any]
     review_dataframe: pd.DataFrame
-    review_csv_path: Path | None = None
     dropbox_review_csv_path: str | None = None
 
     @property
@@ -433,27 +431,24 @@ def create_review_dataframe(
     return dataframe.reset_index(drop=True)
 
 
-def write_review_csv(review_dataframe: pd.DataFrame, output_file: Path) -> Path:
-    """Persist the human-review CSV artifact."""
-    output_file.parent.mkdir(exist_ok=True, parents=True)
-    review_dataframe.to_csv(output_file, index=False)
-    return output_file
-
-
 def upload_review_csv_to_dropbox(
     settings: Settings,
     review_dataframe: pd.DataFrame,
-    output_file: Path,
     *,
+    base_filename: str = DEFAULT_REVIEW_FILENAME,
     extracted_at: datetime | None = None,
 ) -> str | None:
     """Upload the review CSV to Dropbox using a date-versioned filename."""
     if not settings.dropbox_review_output_path:
-        return None
+        raise ValueError("DROPBOX_REVIEW_OUTPUT_PATH is not configured.")
 
     extracted_at = extracted_at or datetime.now()
-    stamp = extracted_at.strftime("%Y%m%d")
-    versioned_name = f"{output_file.stem}_{stamp}{output_file.suffix}"
+    stamp = extracted_at.strftime("%Y%m%d_%H%M%S")
+    stem, dot, suffix = base_filename.rpartition(".")
+    if dot:
+        versioned_name = f"{stem}_{stamp}.{suffix}"
+    else:
+        versioned_name = f"{base_filename}_{stamp}"
     destination_path = (
         settings.dropbox_review_output_path.rstrip("/") + "/" + versioned_name
     )
@@ -471,21 +466,19 @@ def upload_review_csv_to_dropbox(
 def run_extract_for_review_pipeline(
     *,
     settings: Settings | None = None,
-    input_dir: Path | None = None,
-    output_file: Path | None = None,
     model: str = DEFAULT_EXTRACTION_MODEL,
     title_model: str = DEFAULT_TITLE_MODEL,
 ) -> ExtractionRunResult:
-    """Run the extraction workflow from raw documents to review CSV."""
+    """Run the extraction workflow from Dropbox source documents to a Dropbox review CSV."""
     settings = settings or load_settings(override=True)
+    if settings.artifact_source != "dropbox":
+        raise ValueError("Extraction requires ARTIFACT_SOURCE=dropbox.")
     openai_client = create_openai_client(settings)
-
-    resolved_output_file = output_file
 
     print("Loading source artifacts...")
     document_char_counts: dict[str, int] = {}
     all_extractions: dict[str, dict[str, Any]] = {}
-    for artifact in iter_source_artifacts(settings, input_dir=input_dir):
+    for artifact in iter_source_artifacts(settings):
         parsed_document = parse_document_artifact(artifact)
         document_char_counts[parsed_document.name] = len(parsed_document.text)
         print(f"Prepared document: {parsed_document.name} ({len(parsed_document.text):,} characters)")
@@ -529,23 +522,12 @@ def run_extract_for_review_pipeline(
         thesis_core_theses,
         settings.core_theses,
     )
-    review_csv_path = (
-        write_review_csv(review_dataframe, resolved_output_file)
-        if resolved_output_file is not None
-        else None
-    )
     dropbox_review_csv_path = upload_review_csv_to_dropbox(
         settings,
         review_dataframe,
-        resolved_output_file or Path(DEFAULT_REVIEW_FILENAME),
+        base_filename=DEFAULT_REVIEW_FILENAME,
     )
-
-    if review_csv_path is not None:
-        print(f"\nCreated local review CSV: {review_csv_path}")
-    if dropbox_review_csv_path:
-        print(f"Dropbox review CSV: {dropbox_review_csv_path}")
-    if review_csv_path is None and dropbox_review_csv_path is None:
-        print("\nWARNING: No review artifact was persisted.")
+    print(f"Dropbox review CSV: {dropbox_review_csv_path}")
     print("\nCSV Summary:")
     print(f"  Total theses: {len(review_dataframe)}")
     print(
@@ -558,7 +540,6 @@ def run_extract_for_review_pipeline(
         all_extractions=all_extractions,
         deduplicated=deduplicated,
         review_dataframe=review_dataframe,
-        review_csv_path=review_csv_path,
         dropbox_review_csv_path=dropbox_review_csv_path,
     )
 

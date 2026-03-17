@@ -44,15 +44,20 @@ def validate_reviewed_theses_dataframe(
     dataframe: pd.DataFrame,
     *,
     allowed_core_theses: Iterable[str] | None = None,
+    allow_missing_title: bool = False,
 ) -> pd.DataFrame:
     """Validate and normalize the reviewed thesis CSV contract."""
+    working = dataframe.copy()
+    if allow_missing_title and "Title" not in working.columns:
+        working["Title"] = ""
+
     missing_columns = [
-        column for column in REQUIRED_REVIEWED_CSV_COLUMNS if column not in dataframe.columns
+        column for column in REQUIRED_REVIEWED_CSV_COLUMNS if column not in working.columns
     ]
     if missing_columns:
         raise ValueError(f"Missing required reviewed CSV columns: {missing_columns}")
 
-    normalized = dataframe.loc[:, REVIEWED_CSV_COLUMNS].copy()
+    normalized = working.loc[:, REVIEWED_CSV_COLUMNS].copy()
     normalized["Thesis Number"] = pd.to_numeric(
         normalized["Thesis Number"],
         errors="raise",
@@ -65,7 +70,7 @@ def validate_reviewed_theses_dataframe(
 
     if normalized["Thesis Statement"].eq("").any():
         raise ValueError("Reviewed CSV contains empty 'Thesis Statement' values.")
-    if normalized["Title"].eq("").any():
+    if not allow_missing_title and normalized["Title"].eq("").any():
         raise ValueError("Reviewed CSV contains empty 'Title' values.")
     if normalized["Description"].eq("").any():
         raise ValueError("Reviewed CSV contains empty 'Description' values.")
@@ -98,11 +103,13 @@ def reviewed_records_from_dataframe(
     dataframe: pd.DataFrame,
     *,
     allowed_core_theses: Iterable[str] | None = None,
+    allow_missing_title: bool = False,
 ) -> list[ReviewedThesisRecord]:
     """Convert a validated dataframe to typed reviewed-thesis records."""
     validated = validate_reviewed_theses_dataframe(
         dataframe,
         allowed_core_theses=allowed_core_theses,
+        allow_missing_title=allow_missing_title,
     )
     return [
         ReviewedThesisRecord(

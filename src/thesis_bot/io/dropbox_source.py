@@ -69,6 +69,23 @@ def upload_bytes_to_dropbox(
     return result.path_display or result.path_lower or destination_path
 
 
+def download_dropbox_file_bytes(
+    settings: Settings,
+    *,
+    dropbox_path: str,
+) -> bytes:
+    """Download a single Dropbox file into memory."""
+    if not settings.dropbox_access_token:
+        raise ValueError("DROPBOX_ACCESS_TOKEN is not configured.")
+
+    dbx = _create_rooted_dropbox_client(settings)
+    try:
+        _, response = dbx.files_download(dropbox_path)
+    except ApiError as exc:
+        raise ValueError(f"Dropbox download failed for {dropbox_path}: {exc}") from exc
+    return response.content
+
+
 def iter_dropbox_document_artifacts(
     settings: Settings,
     *,

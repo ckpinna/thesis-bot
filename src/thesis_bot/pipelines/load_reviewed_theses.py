@@ -2,19 +2,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-
 import pandas as pd
 from neo4j import Driver
 
 from thesis_bot.clients.neo4j_client import create_neo4j_driver
 from thesis_bot.clients.openai_client import create_openai_client
 from thesis_bot.config import Settings, load_settings
-from thesis_bot.io.review_csv import read_reviewed_theses_csv
+from thesis_bot.io.review_csv import read_reviewed_theses_dropbox_csv
+from thesis_bot.pipelines.extract_for_review import (
+    DEFAULT_TITLE_MODEL,
+    generate_4word_title,
+)
+from thesis_bot.schemas import validate_reviewed_theses_dataframe
 
 
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
-DEFAULT_REVIEWED_FILENAME = "theses_reviewed.csv"
 
 
 @dataclass(frozen=True)
@@ -35,12 +37,22 @@ class LoadReviewedThesesResult:
     stats: GraphLoadStats
 
 
-def load_reviewed_dataframe(csv_path: Path) -> pd.DataFrame:
-    """Load and validate the reviewed thesis CSV."""
-    settings = load_settings(override=True)
-    return read_reviewed_theses_csv(
-        csv_path,
-        allowed_core_theses=settings.core_theses,
+def load_reviewed_dataframe(
+    *,
+    settings: Settings | None = None,
+    allow_missing_title: bool = True,
+) -> pd.DataFrame:
+    """Load and validate the reviewed thesis CSV from Dropbox."""
+    settings = settings or load_settings(override=True)
+    if settings.dropbox_reviewed_theses_path:
+        return read_reviewed_theses_dropbox_csv(
+            settings,
+            dropbox_path=settings.dropbox_reviewed_theses_path,
+            allowed_core_theses=settings.core_theses,
+            allow_missing_title=allow_missing_title,
+        )
+    raise ValueError(
+        "No reviewed thesis CSV source configured. Set DROPBOX_REVIEWED_THESES_PATH."
     )
 
 
@@ -82,6 +94,33 @@ def generate_embeddings_for_dataframe(
             print("    Embedding unavailable")
     print(f"\nGenerated {len(embeddings)} embeddings")
     return embeddings
+
+
+def ensure_titles_for_dataframe(
+    dataframe: pd.DataFrame,
+    openai_client: OpenAI | None,
+    *,
+    model: str = DEFAULT_TITLE_MODEL,
+) -> pd.DataFrame:
+    """Backfill missing thesis titles before Neo4j load."""
+    normalized = dataframe.copy()
+    missing_mask = normalized["Title"].fillna("").astype(str).str.strip().eq("")
+    if not missing_mask.any():
+        return normalized
+
+    print(f"Generating titles for {int(missing_mask.sum())} thesis row(s) with missing titles...")
+    for index in normalized.index[missing_mask]:
+        thesis_num = int(normalized.at[index, "Thesis Number"])
+        thesis_statement = str(normalized.at[index, "Thesis Statement"])
+        print(f"  Generating title for thesis {thesis_num}...")
+        normalized.at[index, "Title"] = generate_4word_title(
+            thesis_statement,
+            openai_client,
+            model=model,
+        )
+        print(f"    {normalized.at[index, 'Title']}")
+
+    return normalized
 
 
 def clear_neo4j_database(driver: Driver) -> None:
@@ -227,24 +266,37 @@ def query_neo4j_stats(driver: Driver) -> GraphLoadStats:
 def run_load_reviewed_theses_pipeline(
     *,
     settings: Settings | None = None,
-    csv_path: Path | None = None,
     clear_existing: bool = True,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    title_model: str = DEFAULT_TITLE_MODEL,
 ) -> LoadReviewedThesesResult:
-    """Load the reviewed thesis CSV into Neo4j."""
+    """Load the Dropbox-reviewed thesis CSV into Neo4j."""
     settings = settings or load_settings(override=True)
     if not settings.neo4j_configured:
         raise ValueError("Neo4j environment variables are not fully configured.")
 
-    resolved_csv_path = csv_path or (settings.analysis_dir / DEFAULT_REVIEWED_FILENAME)
-    if not resolved_csv_path.exists():
-        raise FileNotFoundError(f"Reviewed thesis CSV not found: {resolved_csv_path}")
-
-    print(f"Loading reviewed thesis CSV: {resolved_csv_path}")
-    reviewed_dataframe = load_reviewed_dataframe(resolved_csv_path)
-    print(f"Loaded {len(reviewed_dataframe)} reviewed theses")
+    if settings.dropbox_reviewed_theses_path:
+        print(f"Loading reviewed thesis CSV from Dropbox: {settings.dropbox_reviewed_theses_path}")
+    else:
+        raise ValueError(
+            "No reviewed thesis CSV source configured. Set DROPBOX_REVIEWED_THESES_PATH."
+        )
 
     openai_client = create_openai_client(settings)
+    reviewed_dataframe = load_reviewed_dataframe(
+        settings=settings,
+        allow_missing_title=True,
+    )
+    reviewed_dataframe = ensure_titles_for_dataframe(
+        reviewed_dataframe,
+        openai_client,
+        model=title_model,
+    )
+    reviewed_dataframe = validate_reviewed_theses_dataframe(
+        reviewed_dataframe,
+        allowed_core_theses=settings.core_theses,
+    )
+    print(f"Loaded {len(reviewed_dataframe)} reviewed theses")
     thesis_titles = {
         int(row["Thesis Number"]): row["Title"]
         for _, row in reviewed_dataframe.iterrows()

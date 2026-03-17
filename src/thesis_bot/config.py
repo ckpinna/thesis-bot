@@ -24,6 +24,7 @@ class Settings:
     dropbox_thesis_source_path: str | None
     dropbox_pipeline_decks_path: str | None
     dropbox_review_output_path: str | None
+    dropbox_reviewed_theses_path: str | None
     core_theses: tuple[str, ...]
     data_dir: Path
     latest_thesis_decks_dir: Path
@@ -58,6 +59,7 @@ def load_settings(env_path: Path | None = None, *, override: bool = False) -> Se
         dropbox_thesis_source_path=os.getenv("DROPBOX_THESIS_SOURCE_PATH"),
         dropbox_pipeline_decks_path=os.getenv("DROPBOX_PIPELINE_DECKS_PATH"),
         dropbox_review_output_path=os.getenv("DROPBOX_REVIEW_OUTPUT_PATH"),
+        dropbox_reviewed_theses_path=os.getenv("DROPBOX_REVIEWED_THESES_PATH"),
         core_theses=core_theses,
         data_dir=data_dir,
         latest_thesis_decks_dir=latest_thesis_decks_dir,
