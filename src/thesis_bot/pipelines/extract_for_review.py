@@ -11,9 +11,8 @@ from openai import OpenAI
 
 from thesis_bot.config import Settings, load_settings
 from thesis_bot.clients.openai_client import create_openai_client
-from thesis_bot.io.document_parsers import parse_document_artifacts
-from thesis_bot.io.document_source import ParsedDocument
-from thesis_bot.io.source_loader import load_source_artifacts
+from thesis_bot.io.document_parsers import parse_document_artifact
+from thesis_bot.io.source_loader import iter_source_artifacts
 from thesis_bot.schemas import REVIEWED_CSV_COLUMNS
 
 
@@ -25,7 +24,7 @@ CHUNK_OVERLAP_CHARS = 10000
 
 @dataclass(frozen=True)
 class ExtractionRunResult:
-    document_texts: dict[str, str]
+    document_char_counts: dict[str, int]
     all_extractions: dict[str, dict[str, Any]]
     deduplicated: dict[str, Any]
     review_dataframe: pd.DataFrame
@@ -33,8 +32,8 @@ class ExtractionRunResult:
 
     @property
     def pdf_texts(self) -> dict[str, str]:
-        """Backward-compatible alias for older notebook code."""
-        return self.document_texts
+        """Deprecated compatibility shim for older notebook code."""
+        return {name: "" for name in self.document_char_counts}
 
 
 def extract_theses_from_text(
@@ -168,32 +167,6 @@ def extract_theses_from_text_chunked(
     }
 
 
-def run_extractions(
-    document_texts: dict[str, str],
-    openai_client: OpenAI | None,
-    *,
-    model: str = DEFAULT_EXTRACTION_MODEL,
-) -> dict[str, dict[str, Any]]:
-    """Run thesis extraction for every loaded document."""
-    all_extractions: dict[str, dict[str, Any]] = {}
-    for filename, text in document_texts.items():
-        print(f"\n{'=' * 60}")
-        print(f"Extracting theses from: {filename}")
-        print(f"{'=' * 60}")
-        extraction = extract_theses_from_text(
-            text,
-            filename,
-            openai_client,
-            model=model,
-        )
-        all_extractions[filename] = extraction
-        print(
-            f"  Found {len(extraction.get('theses', []))} theses, "
-            f"{len(extraction.get('thesis_supports', []))} support relationships"
-        )
-    return all_extractions
-
-
 def deduplicate_theses(all_extractions: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Combine theses, deduplicate similar entries, and assign unique numbers."""
     all_theses: list[dict[str, Any]] = []
@@ -321,12 +294,28 @@ def run_extract_for_review_pipeline(
     resolved_output_file = output_file or (settings.analysis_dir / DEFAULT_REVIEW_FILENAME)
 
     print("Loading source artifacts...")
-    artifacts = load_source_artifacts(settings, input_dir=input_dir)
-    parsed_documents = parse_document_artifacts(artifacts)
-    document_texts = _parsed_documents_to_text_map(parsed_documents)
-    print(f"\nLoaded {len(document_texts)} document(s)")
+    document_char_counts: dict[str, int] = {}
+    all_extractions: dict[str, dict[str, Any]] = {}
+    for artifact in iter_source_artifacts(settings, input_dir=input_dir):
+        parsed_document = parse_document_artifact(artifact)
+        document_char_counts[parsed_document.name] = len(parsed_document.text)
+        print(f"Prepared document: {parsed_document.name} ({len(parsed_document.text):,} characters)")
+        print(f"\n{'=' * 60}")
+        print(f"Extracting theses from: {parsed_document.name}")
+        print(f"{'=' * 60}")
+        extraction = extract_theses_from_text(
+            parsed_document.text,
+            parsed_document.name,
+            openai_client,
+            model=model,
+        )
+        all_extractions[parsed_document.name] = extraction
+        print(
+            f"  Found {len(extraction.get('theses', []))} theses, "
+            f"{len(extraction.get('thesis_supports', []))} support relationships"
+        )
 
-    all_extractions = run_extractions(document_texts, openai_client, model=model)
+    print(f"\nLoaded {len(document_char_counts)} document(s)")
     print(f"\nExtraction complete for {len(all_extractions)} document(s)")
 
     print("Deduplicating theses...")
@@ -347,7 +336,7 @@ def run_extract_for_review_pipeline(
     )
 
     return ExtractionRunResult(
-        document_texts=document_texts,
+        document_char_counts=document_char_counts,
         all_extractions=all_extractions,
         deduplicated=deduplicated,
         review_dataframe=review_dataframe,
@@ -366,7 +355,3 @@ def _parse_json_response(result_text: str) -> dict[str, Any]:
         result_text = json_match.group(0)
 
     return json.loads(result_text.strip())
-
-
-def _parsed_documents_to_text_map(parsed_documents: list[ParsedDocument]) -> dict[str, str]:
-    return {document.name: document.text for document in parsed_documents}

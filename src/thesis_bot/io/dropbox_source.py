@@ -3,6 +3,7 @@ from __future__ import annotations
 from dropbox import Dropbox, common
 from dropbox.exceptions import ApiError, AuthError
 from dropbox.files import FileMetadata, FolderMetadata, ListFolderResult
+from typing import Iterator
 
 from thesis_bot.config import Settings
 from thesis_bot.io.document_source import DocumentArtifact, SUPPORTED_DOCUMENT_EXTENSIONS
@@ -43,6 +44,16 @@ def load_dropbox_document_artifacts(
     recursive: bool = True,
 ) -> list[DocumentArtifact]:
     """Load supported documents from a Dropbox folder."""
+    return list(iter_dropbox_document_artifacts(settings, dropbox_path=dropbox_path, recursive=recursive))
+
+
+def iter_dropbox_document_artifacts(
+    settings: Settings,
+    *,
+    dropbox_path: str | None = None,
+    recursive: bool = True,
+) -> Iterator[DocumentArtifact]:
+    """Yield supported Dropbox documents one at a time."""
     if not settings.dropbox_access_token:
         raise ValueError("DROPBOX_ACCESS_TOKEN is not configured.")
 
@@ -56,21 +67,17 @@ def load_dropbox_document_artifacts(
     files = _list_supported_files(dbx, source_path, recursive=recursive)
     if not files:
         print(f"WARNING: No supported Dropbox documents found in {source_path}")
-        return []
+        return
 
-    artifacts: list[DocumentArtifact] = []
     for file_metadata in files:
         print(f"Downloading: {file_metadata.name}")
         _, response = dbx.files_download(file_metadata.path_lower or file_metadata.path_display)
-        artifacts.append(
-            DocumentArtifact(
-                name=file_metadata.name,
-                source_uri=file_metadata.path_display or file_metadata.path_lower or file_metadata.name,
-                extension=_normalized_extension(file_metadata.name),
-                content=response.content,
-            )
+        yield DocumentArtifact(
+            name=file_metadata.name,
+            source_uri=file_metadata.path_display or file_metadata.path_lower or file_metadata.name,
+            extension=_normalized_extension(file_metadata.name),
+            content=response.content,
         )
-    return artifacts
 
 
 def _list_supported_files(
