@@ -13,7 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     extract_parser = subparsers.add_parser(
         "extract-theses",
-        help="Extract theses from the configured Dropbox source and write a Dropbox review CSV.",
+        help="Extract theses from the configured source and write one review CSV per core thesis bucket.",
     )
     extract_parser.add_argument(
         "--model",
@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     load_parser = subparsers.add_parser(
         "load-theses",
-        help="Load the configured Dropbox reviewed thesis CSV into Neo4j.",
+        help="Load the configured reviewed thesis bucket CSV run into Neo4j.",
     )
     load_parser.add_argument(
         "--keep-existing",
@@ -72,7 +72,10 @@ def main() -> int:
             model=args.model,
             title_model=args.title_model,
         )
-        print(f"\nNext step: review {result.dropbox_review_csv_path} before Neo4j load.")
+        print(f"\nExtraction run: {result.run_id}")
+        print("Next step: review these bucket files before Neo4j load.")
+        for core_thesis, output_path in result.review_output_paths_by_core_thesis.items():
+            print(f"  {core_thesis}: {output_path}")
         return 0
 
     if args.command == "load-theses":
@@ -82,6 +85,7 @@ def main() -> int:
             title_model=args.title_model,
         )
         print("\nNeo4j load complete.")
+        print(f"  Reviewed run: {result.reviewed_run_path}")
         print(f"  CoreThesis nodes: {result.core_thesis_count}")
         print(f"  Thesis nodes: {result.thesis_node_count}")
         print(f"  SUPPORTS relationships: {result.supports_relationship_count}")

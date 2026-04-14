@@ -6,6 +6,7 @@ Requires-Python: >=3.13
 Description-Content-Type: text/markdown
 Requires-Dist: dropbox>=12.0.2
 Requires-Dist: pymupdf>=1.23.0
+Requires-Dist: python-pptx>=1.0.2
 Requires-Dist: openai>=1.0.0
 Requires-Dist: neo4j>=5.0.0
 Requires-Dist: python-dotenv>=1.0.0
@@ -15,3 +16,243 @@ Requires-Dist: plotly>=5.17.0
 Requires-Dist: pandas>=2.0.0
 Requires-Dist: jupyter>=1.0.0
 Requires-Dist: numpy>=1.24.0
+
+# thesis-bot
+
+`thesis-bot` extracts theses from documents, splits them into core thesis review buckets, and loads reviewed results into Neo4j.
+
+The current workflow supports:
+
+- extraction source from Dropbox or a local folder
+- review output to Dropbox or a local folder
+- reviewed input for Neo4j load from Dropbox or a local folder
+- one reviewed CSV per configured core thesis bucket
+
+## Default Core Thesis Buckets
+
+By default the repo uses:
+
+- `Artificial Intelligence`
+- `Construction`
+- `Biotech`
+- `Criteria`
+- `Unsorted`
+
+`Unsorted` is always included as a valid bucket.
+
+## Supported Source Files
+
+- `.pdf`
+- `.docx`
+- `.pptx`
+- `.md`
+- `.txt`
+
+## Setup
+
+```bash
+uv sync
+```
+
+CLI entrypoints:
+
+```bash
+uv run python -m thesis_bot --help
+uv run python -m thesis_bot.cli --help
+```
+
+## Configuration
+
+Create a `.env` in the repo root.
+
+### Required common settings
+
+```env
+OPENAI_API_KEY=...
+NEO4J_URI=neo4j+s://...
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=...
+DROPBOX_ACCESS_TOKEN=...
+CORE_THESES=Artificial Intelligence,Construction,Biotech,Criteria,Unsorted
+```
+
+### Extraction source settings
+
+Choose one:
+
+```env
+EXTRACTION_SOURCE=dropbox
+DROPBOX_THESIS_SOURCE_PATH=/10. Proprietary/Thesis Decks
+```
+
+```env
+EXTRACTION_SOURCE=local
+LOCAL_THESIS_SOURCE_PATH=data/latest_thesis_decks
+```
+
+### Review output settings
+
+Choose one:
+
+```env
+REVIEW_OUTPUT_DESTINATION=dropbox
+DROPBOX_REVIEW_OUTPUT_PATH=/10. Proprietary/Analysis
+```
+
+```env
+REVIEW_OUTPUT_DESTINATION=local
+LOCAL_REVIEW_OUTPUT_DIR=data/analysis
+```
+
+### Reviewed run input settings for Neo4j load
+
+Choose one:
+
+```env
+REVIEW_INPUT_SOURCE=dropbox
+DROPBOX_REVIEWED_RUN_PATH=/10. Proprietary/Analysis/review_run_20260414_101500
+```
+
+```env
+REVIEW_INPUT_SOURCE=local
+LOCAL_REVIEWED_RUN_DIR=data/analysis/review_run_20260414_101500
+```
+
+## CLI Commands
+
+Show help:
+
+```bash
+uv run python -m thesis_bot --help
+```
+
+List Dropbox paths:
+
+```bash
+uv run python -m thesis_bot list-dropbox --path '/10. Proprietary' --recursive
+```
+
+Extract theses into per-bucket review files:
+
+```bash
+uv run python -m thesis_bot extract-theses
+```
+
+Optional models:
+
+```bash
+uv run python -m thesis_bot extract-theses \
+  --model gpt-4-turbo-preview \
+  --title-model gpt-4o-mini
+```
+
+Load a reviewed run into Neo4j:
+
+```bash
+uv run python -m thesis_bot load-theses
+```
+
+Keep the existing graph instead of clearing it:
+
+```bash
+uv run python -m thesis_bot load-theses --keep-existing
+```
+
+Override embedding/title models:
+
+```bash
+uv run python -m thesis_bot load-theses \
+  --embedding-model text-embedding-3-small \
+  --title-model gpt-4o-mini
+```
+
+## Sequential Workflow
+
+### 1. Verify your source path
+
+If you are using Dropbox:
+
+```bash
+uv run python -m thesis_bot list-dropbox --path '/10. Proprietary/Thesis Decks' --recursive
+```
+
+### 2. Run extraction
+
+```bash
+uv run python -m thesis_bot extract-theses
+```
+
+This creates a new run folder such as:
+
+```text
+review_run_20260414_101500
+```
+
+Inside that run folder, the pipeline writes one CSV per bucket, for example:
+
+```text
+artificial_intelligence_theses_for_review.csv
+construction_theses_for_review.csv
+biotech_theses_for_review.csv
+criteria_theses_for_review.csv
+unsorted_theses_for_review.csv
+```
+
+### 3. Review the bucket files
+
+Review each generated CSV and save the reviewed versions in the same run folder.
+
+Required columns:
+
+- `Thesis Number`
+- `Thesis Statement`
+- `Title`
+- `Description`
+- `Supports Thesis Numbers`
+- `Core Thesis`
+- `Source File`
+
+### 4. Point the loader at the reviewed run folder
+
+Dropbox example:
+
+```env
+REVIEW_INPUT_SOURCE=dropbox
+DROPBOX_REVIEWED_RUN_PATH=/10. Proprietary/Analysis/review_run_20260414_101500
+```
+
+Local example:
+
+```env
+REVIEW_INPUT_SOURCE=local
+LOCAL_REVIEWED_RUN_DIR=data/analysis/review_run_20260414_101500
+```
+
+### 5. Load into Neo4j
+
+```bash
+uv run python -m thesis_bot load-theses
+```
+
+The loader reads every configured bucket file in the run folder, merges them, validates them together, generates embeddings, and writes Neo4j.
+
+## Notebooks
+
+These notebooks mirror the shared pipeline code:
+
+- [notebooks/extract_theses_for_review.ipynb](/Users/ck-mac/Code/thesis-bot/notebooks/extract_theses_for_review.ipynb)
+- [notebooks/load_theses_to_neo4j.ipynb](/Users/ck-mac/Code/thesis-bot/notebooks/load_theses_to_neo4j.ipynb)
+- [notebooks/analyze_pitchdeck_alignment.ipynb](/Users/ck-mac/Code/thesis-bot/notebooks/analyze_pitchdeck_alignment.ipynb)
+
+Launch them with:
+
+```bash
+uv run jupyter lab
+```
+
+## Implementation Notes
+
+- extraction scans local folders recursively
+- Dropbox extraction also scans recursively
+- loader expects a complete reviewed run folder with one file per configured bucket
+- the graph load still creates `CoreThesis` nodes, `Thesis` nodes, and `SUPPORTS` relationships from thesis to core thesis

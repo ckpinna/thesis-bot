@@ -5,6 +5,7 @@ import zipfile
 from xml.etree import ElementTree
 
 import fitz
+from pptx import Presentation
 
 from thesis_bot.io.document_source import DocumentArtifact, ParsedDocument
 
@@ -16,6 +17,8 @@ def parse_document_artifact(artifact: DocumentArtifact) -> ParsedDocument:
         text = _extract_text_from_pdf_bytes(artifact.content)
     elif extension == ".docx":
         text = _extract_text_from_docx_bytes(artifact.content)
+    elif extension == ".pptx":
+        text = _extract_text_from_pptx_bytes(artifact.content)
     elif extension in {".md", ".txt"}:
         text = _decode_text_bytes(artifact.content)
     else:
@@ -66,6 +69,20 @@ def _extract_text_from_docx_bytes(content: bytes) -> str:
         if joined:
             paragraphs.append(joined)
     return "\n\n".join(paragraphs)
+
+
+def _extract_text_from_pptx_bytes(content: bytes) -> str:
+    presentation = Presentation(io.BytesIO(content))
+    slides: list[str] = []
+    for slide in presentation.slides:
+        fragments: list[str] = []
+        for shape in slide.shapes:
+            text = getattr(shape, "text", "")
+            if text and text.strip():
+                fragments.append(text.strip())
+        if fragments:
+            slides.append("\n".join(fragments))
+    return "\n\n".join(slides)
 
 
 def _decode_text_bytes(content: bytes) -> str:

@@ -8,7 +8,9 @@ from neo4j import Driver
 from thesis_bot.clients.neo4j_client import create_neo4j_driver
 from thesis_bot.clients.openai_client import create_openai_client
 from thesis_bot.config import Settings, load_settings
-from thesis_bot.io.review_csv import read_reviewed_theses_dropbox_csv
+from thesis_bot.io.review_runs import default_review_run_path
+from thesis_bot.io.review_runs import expected_review_bucket_paths
+from thesis_bot.io.review_runs import read_review_bucket_dataframes
 from thesis_bot.pipelines.extract_for_review import (
     DEFAULT_TITLE_MODEL,
     generate_4word_title,
@@ -28,7 +30,10 @@ class GraphLoadStats:
 
 @dataclass(frozen=True)
 class LoadReviewedThesesResult:
+    reviewed_run_path: str
     reviewed_dataframe: pd.DataFrame
+    reviewed_dataframes_by_core_thesis: dict[str, pd.DataFrame]
+    reviewed_bucket_paths: dict[str, str]
     thesis_titles: dict[int, str]
     embeddings: dict[int, list[float]]
     core_thesis_count: int
@@ -41,19 +46,41 @@ def load_reviewed_dataframe(
     *,
     settings: Settings | None = None,
     allow_missing_title: bool = True,
+    run_path: str | None = None,
 ) -> pd.DataFrame:
-    """Load and validate the reviewed thesis CSV from Dropbox."""
+    """Load and validate the reviewed thesis CSVs from the configured review run."""
     settings = settings or load_settings(override=True)
-    if settings.dropbox_reviewed_theses_path:
-        return read_reviewed_theses_dropbox_csv(
-            settings,
-            dropbox_path=settings.dropbox_reviewed_theses_path,
-            allowed_core_theses=settings.core_theses,
-            allow_missing_title=allow_missing_title,
-        )
-    raise ValueError(
-        "No reviewed thesis CSV source configured. Set DROPBOX_REVIEWED_THESES_PATH."
+    bucket_dataframes = read_review_bucket_dataframes(
+        settings,
+        allow_missing_title=allow_missing_title,
+        run_path=run_path,
     )
+    combined = pd.concat(bucket_dataframes.values(), ignore_index=True)
+    return validate_reviewed_theses_dataframe(
+        combined,
+        allowed_core_theses=settings.core_theses,
+        allow_missing_title=allow_missing_title,
+    )
+
+
+def load_reviewed_bucket_dataframes(
+    *,
+    settings: Settings | None = None,
+    allow_missing_title: bool = True,
+    run_path: str | None = None,
+) -> tuple[str, dict[str, pd.DataFrame], dict[str, str]]:
+    settings = settings or load_settings(override=True)
+    resolved_run_path = str(run_path or default_review_run_path(settings))
+    bucket_paths = {
+        core_thesis: str(path)
+        for core_thesis, path in expected_review_bucket_paths(settings, run_path=resolved_run_path).items()
+    }
+    bucket_dataframes = read_review_bucket_dataframes(
+        settings,
+        allow_missing_title=allow_missing_title,
+        run_path=resolved_run_path,
+    )
+    return resolved_run_path, bucket_dataframes, bucket_paths
 
 
 def generate_embedding(
@@ -270,22 +297,25 @@ def run_load_reviewed_theses_pipeline(
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     title_model: str = DEFAULT_TITLE_MODEL,
 ) -> LoadReviewedThesesResult:
-    """Load the Dropbox-reviewed thesis CSV into Neo4j."""
+    """Load the reviewed thesis CSV run into Neo4j."""
     settings = settings or load_settings(override=True)
     if not settings.neo4j_configured:
         raise ValueError("Neo4j environment variables are not fully configured.")
 
-    if settings.dropbox_reviewed_theses_path:
-        print(f"Loading reviewed thesis CSV from Dropbox: {settings.dropbox_reviewed_theses_path}")
-    else:
-        raise ValueError(
-            "No reviewed thesis CSV source configured. Set DROPBOX_REVIEWED_THESES_PATH."
+    reviewed_run_path, reviewed_dataframes_by_core_thesis, reviewed_bucket_paths = (
+        load_reviewed_bucket_dataframes(
+            settings=settings,
+            allow_missing_title=True,
         )
+    )
+    print(f"Loading reviewed thesis bucket CSVs from {settings.review_input_source}: {reviewed_run_path}")
+    for core_thesis, bucket_path in reviewed_bucket_paths.items():
+        print(f"  {core_thesis}: {bucket_path}")
 
     openai_client = create_openai_client(settings)
-    reviewed_dataframe = load_reviewed_dataframe(
-        settings=settings,
-        allow_missing_title=True,
+    reviewed_dataframe = pd.concat(
+        reviewed_dataframes_by_core_thesis.values(),
+        ignore_index=True,
     )
     reviewed_dataframe = ensure_titles_for_dataframe(
         reviewed_dataframe,
@@ -322,7 +352,10 @@ def run_load_reviewed_theses_pipeline(
         driver.close()
 
     return LoadReviewedThesesResult(
+        reviewed_run_path=reviewed_run_path,
         reviewed_dataframe=reviewed_dataframe,
+        reviewed_dataframes_by_core_thesis=reviewed_dataframes_by_core_thesis,
+        reviewed_bucket_paths=reviewed_bucket_paths,
         thesis_titles=thesis_titles,
         embeddings=embeddings,
         core_thesis_count=core_thesis_count,

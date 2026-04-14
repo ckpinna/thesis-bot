@@ -1,224 +1,189 @@
 # thesis-bot
 
-`thesis-bot` extracts investment theses from source documents, routes them through a human review step, and loads the reviewed results into Neo4j.
+`thesis-bot` extracts theses from documents, splits them into core thesis review buckets, and loads reviewed results into Neo4j.
 
-Today, the CLI workflow is Dropbox-first:
+The current workflow supports:
 
-- Source documents are read from Dropbox
-- The review CSV is written to Dropbox
-- The reviewed CSV is read back from Dropbox
-- The final graph is written to Neo4j
+- extraction source from Dropbox or a local folder
+- review output to Dropbox or a local folder
+- reviewed input for Neo4j load from Dropbox or a local folder
+- one reviewed CSV per configured core thesis bucket
 
-## What This Repo Does
+## Default Core Thesis Buckets
 
-The main workflow has two pipeline stages:
+By default the repo uses:
 
-1. `extract-theses`
-   Reads supported source documents from Dropbox, extracts theses with OpenAI, deduplicates them, generates short titles, assigns a core thesis, and uploads a CSV for human review.
+- `Artificial Intelligence`
+- `Construction`
+- `Biotech`
+- `Criteria`
+- `Unsorted`
 
-2. `load-theses`
-   Reads the reviewed CSV from Dropbox, validates it, fills in any missing titles, generates embeddings, and loads the result into Neo4j.
-
-There is also a helper command:
-
-- `list-dropbox`
-  Lists Dropbox folders and files so you can verify the exact API-visible paths used by the other commands.
+`Unsorted` is always included as a valid bucket.
 
 ## Supported Source Files
 
-The extraction pipeline supports these source document types:
-
 - `.pdf`
 - `.docx`
+- `.pptx`
 - `.md`
 - `.txt`
 
-## Project Layout
-
-Important paths:
-
-- [src/thesis_bot/cli.py](/Users/ck-mac/Code/thesis-bot/src/thesis_bot/cli.py:1): CLI entrypoint
-- [src/thesis_bot/pipelines/extract_for_review.py](/Users/ck-mac/Code/thesis-bot/src/thesis_bot/pipelines/extract_for_review.py:462): extraction pipeline
-- [src/thesis_bot/pipelines/load_reviewed_theses.py](/Users/ck-mac/Code/thesis-bot/src/thesis_bot/pipelines/load_reviewed_theses.py:263): Neo4j load pipeline
-- [src/thesis_bot/config.py](/Users/ck-mac/Code/thesis-bot/src/thesis_bot/config.py:1): environment-driven settings
-- [notebooks/extract_theses_for_review.ipynb](/Users/ck-mac/Code/thesis-bot/notebooks/extract_theses_for_review.ipynb)
-- [notebooks/load_theses_to_neo4j.ipynb](/Users/ck-mac/Code/thesis-bot/notebooks/load_theses_to_neo4j.ipynb)
-- [notebooks/analyze_pitchdeck_alignment.ipynb](/Users/ck-mac/Code/thesis-bot/notebooks/analyze_pitchdeck_alignment.ipynb)
-
 ## Setup
-
-From the repo root:
 
 ```bash
 uv sync
 ```
 
-You can then run the CLI with either form:
+CLI entrypoints:
 
 ```bash
-uv run python -m thesis_bot.cli --help
 uv run python -m thesis_bot --help
+uv run python -m thesis_bot.cli --help
 ```
 
-## Environment Variables
+## Configuration
 
-Create a `.env` file in the repo root.
+Create a `.env` in the repo root.
 
-### Required For Extraction
+### Required common settings
 
 ```env
 OPENAI_API_KEY=...
-ARTIFACT_SOURCE=dropbox
-DROPBOX_ACCESS_TOKEN=...
-DROPBOX_THESIS_SOURCE_PATH=/path/to/source/documents
-DROPBOX_REVIEW_OUTPUT_PATH=/path/to/output/folder
-CORE_THESES=AI,BioTech,ConTech,Investment Criteria
-```
-
-### Required For Neo4j Load
-
-```env
-OPENAI_API_KEY=...
-DROPBOX_ACCESS_TOKEN=...
-DROPBOX_REVIEWED_THESES_PATH=/path/to/reviewed/theses.csv
 NEO4J_URI=neo4j+s://...
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=...
-CORE_THESES=AI,BioTech,ConTech,Investment Criteria
+DROPBOX_ACCESS_TOKEN=...
+CORE_THESES=Artificial Intelligence,Construction,Biotech,Criteria,Unsorted
 ```
 
-Notes:
+### Extraction source settings
 
-- `ARTIFACT_SOURCE` must currently be `dropbox` for `extract-theses`
-- `DROPBOX_REVIEWED_THESES_PATH` is currently required for `load-theses`
-- `CORE_THESES` is a comma-separated list of allowed bucket names for the human review step
+Choose one:
 
-## CLI Reference
+```env
+EXTRACTION_SOURCE=dropbox
+DROPBOX_THESIS_SOURCE_PATH=/10. Proprietary/Thesis Decks
+```
 
-Top-level help:
+```env
+EXTRACTION_SOURCE=local
+LOCAL_THESIS_SOURCE_PATH=data/latest_thesis_decks
+```
+
+### Review output settings
+
+Choose one:
+
+```env
+REVIEW_OUTPUT_DESTINATION=dropbox
+DROPBOX_REVIEW_OUTPUT_PATH=/10. Proprietary/Analysis
+```
+
+```env
+REVIEW_OUTPUT_DESTINATION=local
+LOCAL_REVIEW_OUTPUT_DIR=data/analysis
+```
+
+### Reviewed run input settings for Neo4j load
+
+Choose one:
+
+```env
+REVIEW_INPUT_SOURCE=dropbox
+DROPBOX_REVIEWED_RUN_PATH=/10. Proprietary/Analysis/review_run_20260414_101500
+```
+
+```env
+REVIEW_INPUT_SOURCE=local
+LOCAL_REVIEWED_RUN_DIR=data/analysis/review_run_20260414_101500
+```
+
+## CLI Commands
+
+Show help:
 
 ```bash
-uv run python -m thesis_bot.cli --help
+uv run python -m thesis_bot --help
 ```
 
-Output:
-
-```text
-usage: thesis-bot [-h] {extract-theses,load-theses,list-dropbox} ...
-```
-
-### `list-dropbox`
-
-Use this first to verify the exact Dropbox paths you want the pipelines to use.
+List Dropbox paths:
 
 ```bash
-uv run python -m thesis_bot.cli list-dropbox --path '/10. Proprietary'
-uv run python -m thesis_bot.cli list-dropbox --path '/10. Proprietary' --recursive
+uv run python -m thesis_bot list-dropbox --path '/10. Proprietary' --recursive
 ```
 
-### `extract-theses`
-
-Extract theses from the configured Dropbox source and upload a review CSV back to Dropbox.
+Extract theses into per-bucket review files:
 
 ```bash
-uv run python -m thesis_bot.cli extract-theses
+uv run python -m thesis_bot extract-theses
 ```
 
-Optional model overrides:
+Optional models:
 
 ```bash
-uv run python -m thesis_bot.cli extract-theses \
+uv run python -m thesis_bot extract-theses \
   --model gpt-4-turbo-preview \
   --title-model gpt-4o-mini
 ```
 
-What it does:
-
-- lists and downloads supported documents from `DROPBOX_THESIS_SOURCE_PATH`
-- extracts thesis candidates with OpenAI
-- deduplicates the extracted theses
-- generates short titles
-- assigns each row to a core thesis bucket
-- uploads a timestamped review CSV to `DROPBOX_REVIEW_OUTPUT_PATH`
-
-### `load-theses`
-
-Load a reviewed CSV from Dropbox into Neo4j.
+Load a reviewed run into Neo4j:
 
 ```bash
-uv run python -m thesis_bot.cli load-theses
+uv run python -m thesis_bot load-theses
 ```
 
-Optional flags:
+Keep the existing graph instead of clearing it:
 
 ```bash
-uv run python -m thesis_bot.cli load-theses --keep-existing
+uv run python -m thesis_bot load-theses --keep-existing
 ```
 
+Override embedding/title models:
+
 ```bash
-uv run python -m thesis_bot.cli load-theses \
+uv run python -m thesis_bot load-theses \
   --embedding-model text-embedding-3-small \
   --title-model gpt-4o-mini
 ```
 
-What it does:
-
-- downloads the reviewed CSV from `DROPBOX_REVIEWED_THESES_PATH`
-- validates the required review schema
-- backfills any missing titles
-- generates embeddings for descriptions
-- clears Neo4j unless `--keep-existing` is set
-- creates `CoreThesis` and `Thesis` nodes plus `SUPPORTS` relationships
-
 ## Sequential Workflow
 
-This is the normal end-to-end flow.
+### 1. Verify your source path
 
-### 1. Install dependencies
-
-```bash
-uv sync
-```
-
-### 2. Verify your Dropbox source folder
+If you are using Dropbox:
 
 ```bash
-uv run python -m thesis_bot.cli list-dropbox --path '/10. Proprietary' --recursive
+uv run python -m thesis_bot list-dropbox --path '/10. Proprietary/Thesis Decks' --recursive
 ```
 
-Use the real folder you want to process. Confirm that the documents you expect are visible through the API.
-
-### 3. Set extraction paths in `.env`
-
-Example:
-
-```env
-ARTIFACT_SOURCE=dropbox
-DROPBOX_THESIS_SOURCE_PATH=/10. Proprietary/Thesis Decks
-DROPBOX_REVIEW_OUTPUT_PATH=/10. Proprietary/Analysis
-```
-
-### 4. Run extraction
+### 2. Run extraction
 
 ```bash
-uv run python -m thesis_bot.cli extract-theses
+uv run python -m thesis_bot extract-theses
 ```
 
-Expected result:
+This creates a new run folder such as:
 
-- a timestamped CSV is uploaded to your Dropbox review output folder
-- the CLI prints the uploaded path
+```text
+review_run_20260414_101500
+```
 
-### 5. Review the CSV manually
+Inside that run folder, the pipeline writes one CSV per bucket, for example:
 
-Open the generated CSV and review these columns:
+```text
+artificial_intelligence_theses_for_review.csv
+construction_theses_for_review.csv
+biotech_theses_for_review.csv
+criteria_theses_for_review.csv
+unsorted_theses_for_review.csv
+```
 
-- `Title`
-- `Description`
-- `Supports Thesis Numbers`
-- `Core Thesis`
+### 3. Review the bucket files
 
-The reviewed CSV must contain these columns:
+Review each generated CSV and save the reviewed versions in the same run folder.
+
+Required columns:
 
 - `Thesis Number`
 - `Thesis Statement`
@@ -228,113 +193,47 @@ The reviewed CSV must contain these columns:
 - `Core Thesis`
 - `Source File`
 
-### 6. Point the loader at the reviewed CSV
+### 4. Point the loader at the reviewed run folder
 
-Set:
+Dropbox example:
 
 ```env
-DROPBOX_REVIEWED_THESES_PATH=/10. Proprietary/Analysis/theses_for_review_reviewed.csv
+REVIEW_INPUT_SOURCE=dropbox
+DROPBOX_REVIEWED_RUN_PATH=/10. Proprietary/Analysis/review_run_20260414_101500
 ```
 
-Use the real Dropbox path to the reviewed file.
+Local example:
 
-### 7. Load into Neo4j
+```env
+REVIEW_INPUT_SOURCE=local
+LOCAL_REVIEWED_RUN_DIR=data/analysis/review_run_20260414_101500
+```
+
+### 5. Load into Neo4j
 
 ```bash
-uv run python -m thesis_bot.cli load-theses
+uv run python -m thesis_bot load-theses
 ```
 
-Expected result:
-
-- the reviewed CSV is validated
-- embeddings are generated
-- Neo4j is populated with thesis nodes and relationships
-- the CLI prints graph counts
-
-### 8. Re-run safely when needed
-
-If you want to append without clearing the existing graph first:
-
-```bash
-uv run python -m thesis_bot.cli load-theses --keep-existing
-```
-
-## Copy-Paste Example Session
-
-This is what a typical run might look like:
-
-```bash
-uv sync
-
-uv run python -m thesis_bot.cli list-dropbox --path '/10. Proprietary/Thesis Decks' --recursive
-
-uv run python -m thesis_bot.cli extract-theses
-
-# Review the generated CSV in Dropbox, then update DROPBOX_REVIEWED_THESES_PATH
-
-uv run python -m thesis_bot.cli load-theses
-```
+The loader reads every configured bucket file in the run folder, merges them, validates them together, generates embeddings, and writes Neo4j.
 
 ## Notebooks
 
-The notebooks mirror the same workflow in a more exploratory format:
+These notebooks mirror the shared pipeline code:
 
-- `notebooks/extract_theses_for_review.ipynb`
-- `notebooks/load_theses_to_neo4j.ipynb`
-- `notebooks/analyze_pitchdeck_alignment.ipynb`
+- [notebooks/extract_theses_for_review.ipynb](/Users/ck-mac/Code/thesis-bot/notebooks/extract_theses_for_review.ipynb)
+- [notebooks/load_theses_to_neo4j.ipynb](/Users/ck-mac/Code/thesis-bot/notebooks/load_theses_to_neo4j.ipynb)
+- [notebooks/analyze_pitchdeck_alignment.ipynb](/Users/ck-mac/Code/thesis-bot/notebooks/analyze_pitchdeck_alignment.ipynb)
 
-If you want the notebook UI:
+Launch them with:
 
 ```bash
 uv run jupyter lab
 ```
 
-## Current Limitations
+## Implementation Notes
 
-- CLI extraction currently supports Dropbox as the only artifact source
-- CLI loading currently expects the reviewed CSV in Dropbox
-- `load-theses` clears the Neo4j database by default unless you pass `--keep-existing`
-
-## Troubleshooting
-
-### Dropbox authentication failed
-
-Check:
-
-- `DROPBOX_ACCESS_TOKEN`
-- the exact Dropbox path passed to `list-dropbox`
-
-### No documents found during extraction
-
-Check:
-
-- `DROPBOX_THESIS_SOURCE_PATH`
-- that the folder contains supported file types
-- that the files are visible through `list-dropbox --recursive`
-
-### Loader says no reviewed CSV source configured
-
-Set:
-
-```env
-DROPBOX_REVIEWED_THESES_PATH=/your/reviewed/file.csv
-```
-
-### Neo4j connection fails
-
-Check:
-
-- `NEO4J_URI`
-- `NEO4J_USER`
-- `NEO4J_PASSWORD`
-
-## Development Notes
-
-Entry points:
-
-```bash
-uv run python -m thesis_bot.cli --help
-uv run python -m thesis_bot --help
-```
-
-There is also a placeholder [main.py](/Users/ck-mac/Code/thesis-bot/main.py:1), but the real application entrypoint is the package CLI under `src/thesis_bot`.
+- extraction scans local folders recursively
+- Dropbox extraction also scans recursively
+- loader expects a complete reviewed run folder with one file per configured bucket
+- the graph load still creates `CoreThesis` nodes, `Thesis` nodes, and `SUPPORTS` relationships from thesis to core thesis

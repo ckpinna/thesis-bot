@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-SUPPORTED_DOCUMENT_EXTENSIONS = (".pdf", ".docx", ".md", ".txt")
+SUPPORTED_DOCUMENT_EXTENSIONS = (".pdf", ".docx", ".pptx", ".md", ".txt")
 
 
 @dataclass(frozen=True)
@@ -24,19 +24,28 @@ class ParsedDocument:
     text: str
 
 
-def load_local_document_artifacts(data_folder: Path) -> list[DocumentArtifact]:
+def load_local_document_artifacts(
+    data_folder: Path,
+    *,
+    recursive: bool = True,
+) -> list[DocumentArtifact]:
     """Load supported document files from a local directory."""
-    return list(iter_local_document_artifacts(data_folder))
+    return list(iter_local_document_artifacts(data_folder, recursive=recursive))
 
 
-def iter_local_document_artifacts(data_folder: Path) -> Iterator[DocumentArtifact]:
+def iter_local_document_artifacts(
+    data_folder: Path,
+    *,
+    recursive: bool = True,
+) -> Iterator[DocumentArtifact]:
     """Yield supported document files from a local directory one at a time."""
     if not data_folder.exists():
         print(f"WARNING: Input folder does not exist: {data_folder}")
         return
 
     found_supported = False
-    for path in sorted(data_folder.iterdir()):
+    iterator = data_folder.rglob("*") if recursive else data_folder.iterdir()
+    for path in sorted(iterator):
         if not path.is_file():
             continue
         extension = path.suffix.lower()

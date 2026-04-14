@@ -8,35 +8,60 @@ from typing import Any
 
 import pandas as pd
 from openai import OpenAI
+from pydantic import BaseModel
+from pydantic import Field
 
 from thesis_bot.config import Settings, load_settings
 from thesis_bot.config import UNSORTED_CORE_THESIS
 from thesis_bot.clients.openai_client import create_openai_client
 from thesis_bot.io.document_parsers import parse_document_artifact
-from thesis_bot.io.dropbox_source import upload_bytes_to_dropbox
+from thesis_bot.io.review_runs import build_review_run_id
+from thesis_bot.io.review_runs import write_review_bucket_csvs
 from thesis_bot.io.source_loader import iter_source_artifacts
 from thesis_bot.schemas import REVIEWED_CSV_COLUMNS
 
 
-DEFAULT_EXTRACTION_MODEL = "gpt-4-turbo-preview"
+DEFAULT_EXTRACTION_MODEL = "gpt-4.1"
 DEFAULT_TITLE_MODEL = "gpt-4o-mini"
-DEFAULT_REVIEW_FILENAME = "theses_for_review.csv"
 MAX_DOCUMENT_CHARS = 470000
 CHUNK_OVERLAP_CHARS = 10000
+MAX_EXTRACTION_PARSE_ATTEMPTS = 3
+
+
+class ThesisExtractionItem(BaseModel):
+    thesis: str = Field(default="")
+    description: str = Field(default="")
+
+
+class ThesisSupportItem(BaseModel):
+    source_thesis: str = Field(default="")
+    target_thesis: str = Field(default="")
+
+
+class ThesisExtractionPayload(BaseModel):
+    theses: list[ThesisExtractionItem] = Field(default_factory=list)
+    thesis_supports: list[ThesisSupportItem] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class ExtractionRunResult:
+    run_id: str
     document_char_counts: dict[str, int]
     all_extractions: dict[str, dict[str, Any]]
     deduplicated: dict[str, Any]
     review_dataframe: pd.DataFrame
-    dropbox_review_csv_path: str | None = None
+    review_dataframes_by_core_thesis: dict[str, pd.DataFrame]
+    review_output_paths_by_core_thesis: dict[str, str]
 
     @property
     def pdf_texts(self) -> dict[str, str]:
         """Deprecated compatibility shim for older notebook code."""
         return {name: "" for name in self.document_char_counts}
+
+    @property
+    def dropbox_review_csv_path(self) -> str | None:
+        """Deprecated compatibility shim for older notebook code."""
+        return None
 
 
 def extract_theses_from_text(
@@ -99,35 +124,50 @@ Document text (FULL DOCUMENT - analyze everything):
 {text}
 """
 
-    try:
-        print(f"  Analyzing document ({len(text):,} characters)...")
-        response = openai_client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert at analyzing documents and extracting thesis "
-                        "statements. Always return valid JSON. Be thorough and extract "
-                        "all thesis statements from the entire document, even if they "
-                        "seem similar."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-            max_tokens=4096,
-        )
-        result_text = response.choices[0].message.content or ""
-        result = _parse_json_response(result_text)
-        result["filename"] = filename
-        return result
-    except json.JSONDecodeError as exc:
-        print(f"  Failed to parse JSON for {filename}: {exc}")
-        return {"theses": [], "thesis_supports": [], "filename": filename}
-    except Exception as exc:
-        print(f"  Error analyzing {filename}: {exc}")
-        return {"theses": [], "thesis_supports": [], "filename": filename}
+    print(f"  Analyzing document ({len(text):,} characters)...")
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an expert at analyzing documents and extracting thesis "
+                "statements. Return only valid JSON matching the requested schema. "
+                "Be thorough and extract all thesis statements from the entire "
+                "document, even if they seem similar."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+    last_parse_error: json.JSONDecodeError | None = None
+    last_result_text = ""
+    for attempt in range(1, MAX_EXTRACTION_PARSE_ATTEMPTS + 1):
+        try:
+            result = _request_extraction_payload(
+                openai_client,
+                model=model,
+                messages=messages,
+            )
+            result["filename"] = filename
+            return result
+        except json.JSONDecodeError as exc:
+            last_parse_error = exc
+            preview = _response_preview(last_result_text)
+            print(
+                f"  Failed to parse JSON for {filename} on attempt {attempt}/"
+                f"{MAX_EXTRACTION_PARSE_ATTEMPTS}: {exc}"
+            )
+            if preview:
+                print(f"  Response preview: {preview}")
+            if attempt < MAX_EXTRACTION_PARSE_ATTEMPTS:
+                messages = _build_retry_messages(prompt, last_result_text, exc)
+            continue
+        except Exception as exc:
+            print(f"  Error analyzing {filename}: {exc}")
+            return {"theses": [], "thesis_supports": [], "filename": filename}
+
+    if last_parse_error is not None:
+        print(f"  Giving up on {filename} after {MAX_EXTRACTION_PARSE_ATTEMPTS} parse attempts.")
+    return {"theses": [], "thesis_supports": [], "filename": filename}
 
 
 def extract_theses_from_text_chunked(
@@ -418,8 +458,11 @@ def create_review_dataframe(
         )
 
     dataframe = pd.DataFrame(rows, columns=REVIEWED_CSV_COLUMNS)
+    ordered_core_theses = list(allowed_core_theses)
+    if UNSORTED_CORE_THESIS not in ordered_core_theses:
+        ordered_core_theses.append(UNSORTED_CORE_THESIS)
     core_thesis_order = {
-        value: index for index, value in enumerate(allowed_core_theses + (UNSORTED_CORE_THESIS,))
+        value: index for index, value in enumerate(ordered_core_theses)
     }
     dataframe["_core_thesis_order"] = dataframe["Core Thesis"].map(
         lambda value: core_thesis_order.get(value, len(core_thesis_order))
@@ -431,36 +474,26 @@ def create_review_dataframe(
     return dataframe.reset_index(drop=True)
 
 
-def upload_review_csv_to_dropbox(
-    settings: Settings,
+def split_review_dataframe_by_core_thesis(
     review_dataframe: pd.DataFrame,
-    *,
-    base_filename: str = DEFAULT_REVIEW_FILENAME,
-    extracted_at: datetime | None = None,
-) -> str | None:
-    """Upload the review CSV to Dropbox using a date-versioned filename."""
-    if not settings.dropbox_review_output_path:
-        raise ValueError("DROPBOX_REVIEW_OUTPUT_PATH is not configured.")
+    core_theses: tuple[str, ...],
+) -> dict[str, pd.DataFrame]:
+    bucketed: dict[str, pd.DataFrame] = {}
+    empty_template = review_dataframe.iloc[0:0].copy()
+    for core_thesis in core_theses:
+        bucket_frame = review_dataframe[review_dataframe["Core Thesis"] == core_thesis].copy()
+        bucketed[core_thesis] = bucket_frame if not bucket_frame.empty else empty_template.copy()
+    return bucketed
 
-    extracted_at = extracted_at or datetime.now()
-    stamp = extracted_at.strftime("%Y%m%d_%H%M%S")
-    stem, dot, suffix = base_filename.rpartition(".")
-    if dot:
-        versioned_name = f"{stem}_{stamp}.{suffix}"
-    else:
-        versioned_name = f"{base_filename}_{stamp}"
-    destination_path = (
-        settings.dropbox_review_output_path.rstrip("/") + "/" + versioned_name
-    )
-    content = review_dataframe.to_csv(index=False).encode("utf-8")
-    uploaded_path = upload_bytes_to_dropbox(
-        settings,
-        destination_path=destination_path,
-        content=content,
-        overwrite=True,
-    )
-    print(f"Uploaded review CSV to Dropbox: {uploaded_path}")
-    return uploaded_path
+
+def summarize_review_outputs(
+    review_output_paths_by_core_thesis: dict[str, str],
+    review_dataframe: pd.DataFrame,
+) -> None:
+    print("\nReview bucket outputs:")
+    for core_thesis, output_path in review_output_paths_by_core_thesis.items():
+        count = len(review_dataframe[review_dataframe["Core Thesis"] == core_thesis])
+        print(f"  {core_thesis}: {count} rows -> {output_path}")
 
 
 def run_extract_for_review_pipeline(
@@ -469,11 +502,10 @@ def run_extract_for_review_pipeline(
     model: str = DEFAULT_EXTRACTION_MODEL,
     title_model: str = DEFAULT_TITLE_MODEL,
 ) -> ExtractionRunResult:
-    """Run the extraction workflow from Dropbox source documents to a Dropbox review CSV."""
+    """Run the extraction workflow from the configured source to per-bucket review CSVs."""
     settings = settings or load_settings(override=True)
-    if settings.artifact_source != "dropbox":
-        raise ValueError("Extraction requires ARTIFACT_SOURCE=dropbox.")
     openai_client = create_openai_client(settings)
+    run_id = build_review_run_id(created_at=datetime.now())
 
     print("Loading source artifacts...")
     document_char_counts: dict[str, int] = {}
@@ -522,12 +554,16 @@ def run_extract_for_review_pipeline(
         thesis_core_theses,
         settings.core_theses,
     )
-    dropbox_review_csv_path = upload_review_csv_to_dropbox(
-        settings,
+    review_dataframes_by_core_thesis = split_review_dataframe_by_core_thesis(
         review_dataframe,
-        base_filename=DEFAULT_REVIEW_FILENAME,
+        settings.core_theses,
     )
-    print(f"Dropbox review CSV: {dropbox_review_csv_path}")
+    review_output_paths_by_core_thesis = write_review_bucket_csvs(
+        settings,
+        review_dataframes_by_core_thesis,
+        run_id=run_id,
+    )
+    summarize_review_outputs(review_output_paths_by_core_thesis, review_dataframe)
     print("\nCSV Summary:")
     print(f"  Total theses: {len(review_dataframe)}")
     print(
@@ -536,22 +572,189 @@ def run_extract_for_review_pipeline(
     )
 
     return ExtractionRunResult(
+        run_id=run_id,
         document_char_counts=document_char_counts,
         all_extractions=all_extractions,
         deduplicated=deduplicated,
         review_dataframe=review_dataframe,
-        dropbox_review_csv_path=dropbox_review_csv_path,
+        review_dataframes_by_core_thesis=review_dataframes_by_core_thesis,
+        review_output_paths_by_core_thesis=review_output_paths_by_core_thesis,
     )
 
 
 def _parse_json_response(result_text: str) -> dict[str, Any]:
+    result_text = _strip_markdown_fences(result_text)
+    candidate_texts = _candidate_json_payloads(result_text)
+    last_error: json.JSONDecodeError | None = None
+    for candidate in candidate_texts:
+        try:
+            return json.loads(candidate.strip())
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    return json.loads(result_text.strip())
+
+
+def _request_extraction_payload(
+    openai_client: OpenAI,
+    *,
+    model: str,
+    messages: list[dict[str, str]],
+) -> dict[str, Any]:
+    try:
+        completion = openai_client.beta.chat.completions.parse(
+            model=model,
+            messages=messages,
+            temperature=0,
+            max_tokens=4096,
+            response_format=ThesisExtractionPayload,
+        )
+        parsed = completion.choices[0].message.parsed
+        if parsed is None:
+            raise ValueError("Structured extraction response was empty.")
+        return _structured_payload_to_dict(parsed)
+    except Exception as structured_exc:
+        response = openai_client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0,
+            max_tokens=4096,
+            response_format={"type": "json_object"},
+        )
+        result_text = response.choices[0].message.content or ""
+        try:
+            return _coerce_extraction_payload(_parse_json_response(result_text))
+        except json.JSONDecodeError:
+            raise
+        except Exception as fallback_exc:
+            raise ValueError(
+                f"Structured parse failed ({structured_exc}) and fallback parse failed ({fallback_exc})."
+            ) from fallback_exc
+
+
+def _build_retry_messages(
+    original_prompt: str,
+    invalid_result_text: str,
+    parse_error: json.JSONDecodeError,
+) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You repair malformed JSON outputs for a thesis extraction workflow. "
+                "Return only valid JSON with top-level keys 'theses' and "
+                "'thesis_supports'. Do not add commentary."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"The previous response was invalid JSON.\n"
+                f"Parsing error: {parse_error}\n\n"
+                f"Original extraction instructions:\n{original_prompt}\n\n"
+                f"Invalid JSON response to repair:\n{invalid_result_text}"
+            ),
+        },
+    ]
+
+
+def _coerce_extraction_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    theses = payload.get("theses", [])
+    thesis_supports = payload.get("thesis_supports", [])
+    if not isinstance(theses, list):
+        theses = []
+    if not isinstance(thesis_supports, list):
+        thesis_supports = []
+    return {
+        "theses": [item for item in theses if isinstance(item, dict)],
+        "thesis_supports": [item for item in thesis_supports if isinstance(item, dict)],
+    }
+
+
+def _structured_payload_to_dict(payload: ThesisExtractionPayload) -> dict[str, Any]:
+    return {
+        "theses": [
+            {
+                "thesis": item.thesis.strip(),
+                "description": item.description.strip(),
+            }
+            for item in payload.theses
+            if item.thesis.strip()
+        ],
+        "thesis_supports": [
+            {
+                "source_thesis": item.source_thesis.strip(),
+                "target_thesis": item.target_thesis.strip(),
+            }
+            for item in payload.thesis_supports
+            if item.source_thesis.strip() and item.target_thesis.strip()
+        ],
+    }
+
+
+def _strip_markdown_fences(result_text: str) -> str:
     if "```json" in result_text:
         result_text = result_text.split("```json", 1)[1].split("```", 1)[0]
     elif "```" in result_text:
         result_text = result_text.split("```", 1)[1].split("```", 1)[0]
+    return result_text
+
+
+def _candidate_json_payloads(result_text: str) -> list[str]:
+    candidates: list[str] = []
+    stripped = result_text.strip()
+    if stripped:
+        candidates.append(stripped)
 
     json_match = re.search(r"\{.*\}", result_text, re.DOTALL)
     if json_match:
-        result_text = json_match.group(0)
+        matched = json_match.group(0).strip()
+        if matched and matched not in candidates:
+            candidates.append(matched)
 
-    return json.loads(result_text.strip())
+    balanced = _extract_balanced_json_object(result_text)
+    if balanced and balanced not in candidates:
+        candidates.append(balanced)
+
+    return candidates
+
+
+def _extract_balanced_json_object(result_text: str) -> str:
+    start = result_text.find("{")
+    if start == -1:
+        return ""
+
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(result_text)):
+        char = result_text[index]
+        if escape:
+            escape = False
+            continue
+        if char == "\\":
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return result_text[start : index + 1].strip()
+    return ""
+
+
+def _response_preview(result_text: str, *, max_chars: int = 300) -> str:
+    preview = re.sub(r"\s+", " ", (result_text or "").strip())
+    if not preview:
+        return ""
+    if len(preview) <= max_chars:
+        return preview
+    return preview[:max_chars] + "..."
